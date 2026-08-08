@@ -1,93 +1,109 @@
 /*
 pseudocode for a simple TCP server:
 
-fd = socket() <--- (1) 
+fd = socket() <--- (1)
 bind(fd, address)
 listen(fd)
-while (true) 
+while (true)
 {
     conn_fd = accept(fd) <-- accept client connection
-    do_something_with(conn_fd) <-- handle the client connection is that like sending stuff over??
-    close(conn_fd) <-- close for resource management
+    do_something_with(conn_fd) <-- handle the client connection is that like
+sending stuff over?? close(conn_fd) <-- close for resource management
 }
 */
 
-#include <stdlib.h>
-#include <unistd.h>
-#include <stdexcept>
+#include "shared.h"
+
+#include <arpa/inet.h>
 #include <iostream>
+#include <netinet/in.h>
+#include <stdexcept>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <unistd.h>
 
-static void process_client(int connfd);
-static void msg_error(std::string_view err);
+static int32_t process_client(int connfd);
 
-int main()
-{
-    /// (1) creating and configure socket
+int main() {
+  /// (1) creating and configure socket
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    int val {1};
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+  int val{1};
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
-    // (2) bind socket to address
+  // (2) bind socket to address
 
-    struct sockaddr_in addr {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(1234);
-    addr.sin_addr.s_addr = htonl(0);
-    int rv = bind(fd, (const struct sockaddr *)&addr, sizeof(addr));
+  struct sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(k_port);
+  addr.sin_addr.s_addr = htonl(0);
+  if (bind(fd, (const struct sockaddr *)&addr, sizeof(addr))) {
+    throw std::runtime_error("bind() error");
+  }
 
-    // (3) listen for incoming connections
+  // (3) listen for incoming connections
 
-    rv = listen(fd, SOMAXCONN);
-    if (rv) { throw std::runtime_error("listen() error"); }
+  if (listen(fd, SOMAXCONN)) {
+    throw std::runtime_error("listen() error");
+  }
 
-    // (4) accept connections and process
+  // (4) accept connections and process
 
-    while (true)
-    {
-        struct sockaddr_in client_addr = {};
-        socklen_t addrlen = sizeof(client_addr);
-        int connfd = accept(fd, (struct sockaddr *)&client_addr, &addrlen);
-        if (connfd < 0)
-        {
-            msg_error("connection failed with client");
-            continue;
-        }
-
-        process_client(connfd);
-        close(connfd);
+  while (true) {
+    struct sockaddr_in client_addr = {};
+    socklen_t addrlen = sizeof(client_addr);
+    int connfd = accept(fd, (struct sockaddr *)&client_addr, &addrlen);
+    if (connfd < 0) {
+      msg_error("connection failed with client");
+      continue;
     }
 
-    return 0;
+    while (true) {
+      if (process_client(connfd)) {
+        break;
+      }
+    }
+
+    close(connfd);
+  }
+
+  return 0;
 }
 
-static void process_client(int connfd) 
-{
-    char rbuf[64] = {};
-    ssize_t n = read(connfd, rbuf, sizeof(rbuf) - 1);
-    if (n < 0)
-    {
-        msg_error("read() error");
-        return;
-    }
+static int32_t process_client(int connfd) {
+  // 4 bytes header
+  char rbuf[4 + k_max_msg];
+  errno = 0; // by default errno is prev value, so set to 0
+  int32_t err = read_fully(connfd, rbuf, 4);
+  if (err) {
+    msg_error(errno == 0 ? "EOF" : "read() error");
+    return err;
+  }
+  uint32_t len = 0;
+  memcpy(&len, rbuf, 4); // assume little endian
+  if (len > k_max_msg) {
+    msg_error("too long");
+    return -1;
+  }
 
-    std::cout << "received: " << rbuf << std::endl;
+  // request body
+  err = read_fully(connfd, &rbuf[4], len);
+  if (err) {
+    msg_error("read() error");
+    return err;
+  }
 
-    char wbuf[] = "world";
-    auto bytes = write(connfd, wbuf, strlen(wbuf)); // some c code
-    if (bytes < 0)
-    {
-        msg_error("write() error");
-        return;
-    }
-}
+  // do something
+  printf("client says: %.*s\n", (int)len, &rbuf[4]);
 
-static void msg_error(std::string_view err)
-{
-    std::cerr << err << std::endl;
+  // reply using the same protocol
+  const char reply[] = "world";
+  char wbuf[4 + sizeof(reply)];
+  len = (uint32_t)strlen(reply);
+  memcpy(wbuf, &len, 4);
+  memcpy(&wbuf[4], reply, len);
+  return write_fully(connfd, wbuf, 4 + len);
 }

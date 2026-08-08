@@ -3,5 +3,8 @@
 
 # but not .cpp and other stuff
 !*.cpp
+!*.h
+!*.hpp
+!Makefile
 !.gitignore
 !README.md
