@@ -135,7 +135,7 @@ static Conn *handle_accept(int fd) {
   socklen_t addrlen = sizeof(client_addr);
   int connfd = accept(fd, (struct sockaddr *)&client_addr, &addrlen);
   if (connfd < 0) {
-    msg_error("accept() error");
+    msg("accept() error");
     return nullptr;
   }
   // set the new connection fd to non-blocking mode
@@ -154,19 +154,26 @@ static void handle_read(Conn *conn) {
   }
 
   buf_append(conn->incoming, buf, (size_t)rv);
-  try_one_request(conn);
+  while (try_one_request(conn))
+    ; // process all requests in the buffer (pipelining)
 
   if (!conn->outgoing.empty()) { // connection changes here because i think if
                                  // something is inside outgoing that means we
                                  // now need to write to connection
     conn->want_write = true;
     conn->want_read = false;
+    return handle_write(conn); // optimisation: avoid another loop of poll()
   }
 }
 
 static void handle_write(Conn *conn) {
   assert(!conn->outgoing.empty());
   ssize_t rv = write(conn->fd, conn->outgoing.data(), conn->outgoing.size());
+  // check if kernel buffer overwhelmed because writes coming from read now
+  if (rv < 0 && errno == EAGAIN) {
+    return;
+  }
+
   if (rv < 0) {
     conn->want_close = true;
     return;
@@ -202,7 +209,9 @@ static bool try_one_request(Conn *conn) {
 
   buf_append(conn->outgoing, (const uint8_t *)&len, 4);
   buf_append(conn->outgoing, request, len);
-  buf_consume(conn->incoming, 4 + len); // remove msg from incoming
+  buf_consume(conn->incoming,
+              4 + len); // note: important to consume and not clear the whole
+                        // buffer because there could be pipelined requests
 
   return true;
 }
