@@ -4,6 +4,7 @@
 #include <cassert>
 #include <fcntl.h>
 #include <iostream>
+#include <map>
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdexcept>
@@ -23,6 +24,13 @@ struct Conn {
   std::vector<uint8_t> outgoing;
 };
 
+struct Response {
+  uint32_t status{0};
+  std::vector<uint8_t> data;
+};
+
+static std::map<std::string, std::string> g_kv_store;
+
 static void fd_set_nb(int fd);
 static Conn *handle_accept(int fd);
 static void buf_consume(std::vector<uint8_t> &buf, size_t n);
@@ -31,6 +39,15 @@ static void buf_append(std::vector<uint8_t> &buf, const uint8_t *data,
 static bool try_one_request(Conn *conn);
 static void handle_write(Conn *conn);
 static void handle_read(Conn *conn);
+static int32_t parse_req(const uint8_t *data, size_t size,
+                         std::vector<std::string> &out);
+static bool read_u32(const uint8_t *&cur, const uint8_t *end, uint32_t &out);
+static bool read_str(const uint8_t *&cur, const uint8_t *end, size_t n,
+                     std::string &out);
+static void do_request(std::vector<std::string> &cmd, Response &out);
+static void make_response(const Response &in, std::vector<uint8_t> &out);
+
+const size_t k_max_args = 1024; // max number of arguments in a request
 
 // TODO: note for later to replace poll() with epoll()
 
@@ -203,18 +220,109 @@ static bool try_one_request(Conn *conn) {
     return false; // this means read (weird)
   }
 
-  const uint8_t *request = &conn->incoming[4];
+  const uint8_t *request = conn->incoming.data() + 4;
 
-  // process the message
-  std::cout << "client says: " << msg_view(conn->incoming, 4, len) << '\n';
+  std::vector<std::string> cmd;
+  if (parse_req(request, len, cmd) < 0) {
+    conn->want_close = true;
+    return false;
+  }
 
-  buf_append(conn->outgoing, (const uint8_t *)&len, 4);
-  buf_append(conn->outgoing, request, len);
+  Response resp;
+  do_request(cmd, resp);
+  make_response(resp, conn->outgoing);
+
   buf_consume(conn->incoming,
               4 + len); // note: important to consume and not clear the whole
                         // buffer because there could be pipelined requests
 
   return true;
+}
+
+static int32_t parse_req(const uint8_t *data, size_t size,
+                         std::vector<std::string> &out) {
+  const uint8_t *end = data + size;
+  uint32_t nstr = 0;
+
+  // we know first 4 bytes is num args
+  if (!read_u32(data, end, nstr)) {
+    return -1; // error
+  }
+  if (nstr > k_max_args) {
+    return -1; // error
+  }
+
+  // populate vector with requests (nstr)
+  while (out.size() < nstr) {
+    // first gives length of string
+    uint32_t len = 0;
+    if (!read_u32(data, end, len)) {
+      return -1; // error
+    }
+    // push empty string into out and read into it
+    out.push_back(std::string());
+    if (!read_str(data, end, len, out.back())) {
+      return -1; // error
+    }
+  }
+
+  if (data != end) {
+    return -1; // error, extra bytes
+  }
+
+  return 0; // success
+}
+
+static bool read_u32(const uint8_t *&cur, const uint8_t *end, uint32_t &out) {
+  if (cur + 4 > end) {
+    return false;
+  }
+  memcpy(&out, cur, 4);
+  cur += 4;
+  return true;
+}
+
+static bool read_str(const uint8_t *&cur, const uint8_t *end, size_t n,
+                     std::string &out) {
+  if (cur + n > end) {
+    return false;
+  }
+  out.assign(cur, cur + n);
+  cur += n;
+  return true;
+}
+
+#define RES_NX 1
+#define RES_OK 0
+#define RES_ERR 2
+
+// APPLICATION LOGIC <- the db part
+static void do_request(std::vector<std::string> &cmd, Response &out) {
+  if (cmd.size() == 2 && cmd[0] == "GET") {
+    auto it = g_kv_store.find(cmd[1]);
+    if (it == g_kv_store.end()) {
+      out.status = RES_NX;
+      return;
+    }
+    const std::string &val = it->second;
+    out.data.assign(val.begin(), val.end());
+  } else if (cmd.size() == 3 && cmd[0] == "SET") {
+    g_kv_store[cmd[1]].swap(cmd[2]); // swap to avoid copy
+  } else if (cmd.size() == 2 && cmd[0] == "DEL") {
+    g_kv_store.erase(cmd[1]);
+  } else {
+    out.status = RES_ERR; // unrecognized command
+    return;
+  }
+
+  out.status = RES_OK;
+}
+
+static void make_response(const Response &resp, std::vector<uint8_t> &out) {
+  uint32_t len = 4 + (uint32_t)resp.data.size();
+  buf_append(out, (const uint8_t *)&len, 4);
+  buf_append(out, (const uint8_t *)&resp.status, 4);
+  buf_append(out, resp.data.data(), resp.data.size());
 }
 
 static void buf_append(std::vector<uint8_t> &buf, const uint8_t *data,
