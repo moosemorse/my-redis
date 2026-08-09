@@ -1,6 +1,9 @@
 # ignore everything
 *
 
+# but descend into directories
+!*/
+
 # but not .cpp and other stuff
 !*.cpp
 !*.h
@@ -8,3 +11,6 @@
 !Makefile
 !.gitignore
 !README.md
+
+# build output
+build/

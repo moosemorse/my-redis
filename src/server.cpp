@@ -1,4 +1,5 @@
-#include "shared.h"
+#include "buffer.hpp"
+#include "shared.hpp"
 #include <arpa/inet.h>
 #include <cassert>
 #include <fcntl.h>
@@ -188,7 +189,7 @@ static void handle_write(Conn *conn) {
 
 // Protocol: length-prefixed messages
 static bool try_one_request(Conn *conn) {
-  if (conn->incoming.size() < sizeof(int)) {
+  if (conn->incoming.size() < 4) {
     return false;
   }
   uint32_t len = 0;

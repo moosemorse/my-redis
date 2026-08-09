@@ -1,4 +1,4 @@
-#include "shared.h"
+#include "shared.hpp"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
