@@ -1,4 +1,5 @@
 #include "buffer.hpp"
+#include "hashtable.hpp"
 #include "shared.hpp"
 #include <arpa/inet.h>
 #include <cassert>
@@ -15,6 +16,8 @@
 #include <unistd.h>
 #include <vector>
 
+#define container_of(ptr, T, member) ((T *)((char *)ptr - offsetof(T, member)))
+
 struct Conn {
   int fd{-1};
   bool want_read{false};
@@ -29,7 +32,19 @@ struct Response {
   std::vector<uint8_t> data;
 };
 
+// shit one
 static std::map<std::string, std::string> g_kv_store;
+
+// giga chad one
+static struct {
+  HMap db;
+} g_data;
+
+struct Entry {
+  struct HNode node;
+  std::string key;
+  std::string val;
+};
 
 static void fd_set_nb(int fd);
 static Conn *handle_accept(int fd);
@@ -44,8 +59,15 @@ static int32_t parse_req(const uint8_t *data, size_t size,
 static bool read_u32(const uint8_t *&cur, const uint8_t *end, uint32_t &out);
 static bool read_str(const uint8_t *&cur, const uint8_t *end, size_t n,
                      std::string &out);
-static void do_request(std::vector<std::string> &cmd, Response &out);
+static void do_request_with_stl_map(std::vector<std::string> &cmd,
+                                    Response &out);
+static void do_request_with_hm(std::vector<std::string> &cmd, Response &out);
 static void make_response(const Response &in, std::vector<uint8_t> &out);
+static uint64_t str_hash(const uint8_t *data, size_t len);
+static bool entry_eq(HNode *lhs, HNode *rhs);
+static void do_get(std::vector<std::string> &cmd, Response &out);
+static void do_set(std::vector<std::string> &cmd, Response &out);
+static void do_del(std::vector<std::string> &cmd, Response &out);
 
 const size_t k_max_args = 1024; // max number of arguments in a request
 
@@ -229,7 +251,7 @@ static bool try_one_request(Conn *conn) {
   }
 
   Response resp;
-  do_request(cmd, resp);
+  do_request_with_hm(cmd, resp);
   make_response(resp, conn->outgoing);
 
   buf_consume(conn->incoming,
@@ -297,7 +319,8 @@ static bool read_str(const uint8_t *&cur, const uint8_t *end, size_t n,
 #define RES_ERR 2
 
 // APPLICATION LOGIC <- the db part
-static void do_request(std::vector<std::string> &cmd, Response &out) {
+static void do_request_with_stl_map(std::vector<std::string> &cmd,
+                                    Response &out) {
   if (cmd.size() == 2 && cmd[0] == "GET") {
     auto it = g_kv_store.find(cmd[1]);
     if (it == g_kv_store.end()) {
@@ -318,6 +341,18 @@ static void do_request(std::vector<std::string> &cmd, Response &out) {
   out.status = RES_OK;
 }
 
+static void do_request_with_hm(std::vector<std::string> &cmd, Response &out) {
+  if (cmd.size() == 2 && cmd[0] == "GET") {
+    return do_get(cmd, out);
+  } else if (cmd.size() == 3 && cmd[0] == "SET") {
+    return do_set(cmd, out);
+  } else if (cmd.size() == 2 && cmd[0] == "DEL") {
+    return do_del(cmd, out);
+  } else {
+    out.status = RES_ERR; // unrecognized command
+  }
+}
+
 static void make_response(const Response &resp, std::vector<uint8_t> &out) {
   uint32_t len = 4 + (uint32_t)resp.data.size();
   buf_append(out, (const uint8_t *)&len, 4);
@@ -334,4 +369,63 @@ static void buf_append(std::vector<uint8_t> &buf, const uint8_t *data,
 // alternative: use deque<uint8_t> instead of vector<uint8_t> for O(1)
 static void buf_consume(std::vector<uint8_t> &buf, size_t n) {
   buf.erase(buf.begin(), buf.begin() + n);
+}
+
+static void do_get(std::vector<std::string> &cmd, Response &out) {
+  // create key for lookup
+  Entry key;
+  key.key.swap(cmd[1]);
+  key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+  HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+  if (!node) {
+    out.status = RES_NX;
+    return;
+  }
+  const std::string &val = container_of(node, Entry, node)->val;
+  assert(val.size() <= k_max_msg);
+  out.data.assign(val.begin(), val.end());
+}
+
+static void do_set(std::vector<std::string> &cmd, Response &) {
+  Entry key;
+  key.key.swap(cmd[1]);
+  key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+  HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+  if (node) {
+    container_of(node, struct Entry, node)->val.swap(cmd[2]);
+  } else {
+    // not found, allocate & insert a new pair
+    Entry *ent = new Entry();
+    ent->key.swap(key.key);
+    ent->node.hcode = key.node.hcode;
+    ent->val.swap(cmd[2]);
+    hm_insert(&g_data.db, &ent->node);
+  }
+}
+
+static void do_del(std::vector<std::string> &cmd, Response &) {
+  // a dummy entry for the lookup
+  Entry key;
+  key.key.swap(cmd[1]);
+  key.node.hcode = str_hash((uint8_t *)key.key.data(), key.key.size());
+  HNode *node = hm_lookup(&g_data.db, &key.node, &entry_eq);
+  hm_delete(&g_data.db, &key.node, &entry_eq);
+  if (node) {
+    delete container_of(node, Entry, node);
+  }
+}
+
+static bool entry_eq(HNode *lhs, HNode *rhs) {
+  struct Entry *le = container_of(lhs, struct Entry, node);
+  struct Entry *re = container_of(rhs, struct Entry, node);
+  return le->key == re->key;
+}
+
+// FNV hash
+static uint64_t str_hash(const uint8_t *data, size_t len) {
+  uint32_t h = 0x811C9DC5;
+  for (size_t i = 0; i < len; i++) {
+    h = (h + data[i]) * 0x01000193;
+  }
+  return h;
 }

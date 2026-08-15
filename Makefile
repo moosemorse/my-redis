@@ -12,8 +12,9 @@ CPPFLAGS  := $(INCLUDES) -MMD -MP
 
 SHARED_SRCS := $(SRC_DIR)/shared/shared.cpp
 DS_SRCS     := $(SRC_DIR)/datastructures/buffer.cpp
+HM_SRCS     := $(SRC_DIR)/datastructures/hashtable.cpp
 
-SERVER_SRCS := $(SRC_DIR)/server.cpp $(SHARED_SRCS) $(DS_SRCS)
+SERVER_SRCS := $(SRC_DIR)/server.cpp $(SHARED_SRCS) $(DS_SRCS) $(HM_SRCS)
 CLIENT_SRCS := $(SRC_DIR)/client.cpp $(SHARED_SRCS)
 
 SERVER_OBJS := $(SERVER_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)

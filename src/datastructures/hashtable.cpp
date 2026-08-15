@@ -1,24 +1,8 @@
+#include "hashtable.hpp"
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-
-struct HNode {
-  HNode *next = NULL;
-  uint64_t hcode = 0;
-};
-
-struct HTab {
-  HNode **tab = NULL; // array of slots
-  size_t mask = 0;    // used to do fast bitwise mod operation
-  size_t size = 0;    // number of keys
-};
-
-struct HMap {
-  HTab newer;
-  HTab older;
-  size_t migrate_pos = 0;
-};
 
 static void h_init(HTab *htab, size_t n) {
   assert(n > 0 && ((n - 1) & n) == 0);
