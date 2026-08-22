@@ -23,6 +23,7 @@ static void h_insert(HTab *htab, HNode *node) {
   htab->size++;
 }
 
+// Returns the address of the parent node that owns the target node
 static HNode **h_lookup(HTab *htab, HNode *key, bool (*eq)(HNode *, HNode *)) {
   if (!htab->tab) {
     return NULL;
@@ -109,4 +110,29 @@ void hm_insert(HMap *hmap, HNode *node) {
     }
   }
   hm_help_rehashing(hmap); // migrate some keys
+}
+
+void hm_clear(HMap *hmap) {
+  free(hmap->newer.tab);
+  free(hmap->older.tab);
+  *hmap = HMap{};
+}
+
+size_t hm_size(HMap *hmap) {
+  return hmap->newer.size + hmap->older.size;
+}
+
+static bool h_foreach(HTab *htab, bool (*f)(HNode *, void *), void *arg) {
+    for (size_t i = 0; htab->mask != 0 && i <= htab->mask; i++) {
+        for (HNode *node = htab->tab[i]; node != NULL; node = node->next) {
+            if (!f(node, arg)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void hm_foreach(HMap *hmap, bool (*f)(HNode *, void *), void *arg) {
+    h_foreach(&hmap->newer, f, arg) && h_foreach(&hmap->older, f, arg);
 }
