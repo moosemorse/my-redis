@@ -22,6 +22,10 @@ CLIENT_OBJS := $(CLIENT_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
 all: server client
 
+# optimised build for benchmarking, e.g. `make clean release`
+release: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -DNDEBUG
+release: all
+
 server: $(SERVER_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
@@ -37,4 +41,4 @@ clean:
 
 -include $(SERVER_OBJS:.o=.d) $(CLIENT_OBJS:.o=.d)
 
-.PHONY: all clean
+.PHONY: all release clean
