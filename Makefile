@@ -17,14 +17,16 @@ HM_SRCS       := $(SRC_DIR)/datastructures/hashtable.cpp
 
 SERVER_SRCS := $(SRC_DIR)/server.cpp $(SHARED_SRCS) $(DS_SRCS) $(HM_SRCS)
 CLIENT_SRCS := $(SRC_DIR)/client.cpp $(SHARED_SRCS) $(PROTOCOL_SRCS)
+BENCH_SRCS  := $(SRC_DIR)/bench.cpp $(SHARED_SRCS) $(PROTOCOL_SRCS)
 TEST_SRCS   := tests/test_server.cpp $(SHARED_SRCS) $(PROTOCOL_SRCS)
 
 SERVER_OBJS := $(SERVER_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 CLIENT_OBJS := $(CLIENT_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
+BENCH_OBJS  := $(BENCH_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 TEST_OBJS   := $(BUILD_DIR)/tests/test_server.o $(SHARED_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o) \
                $(PROTOCOL_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
-all: server client
+all: server client bench
 
 # optimised build for benchmarking, e.g. `make clean release`
 release: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -DNDEBUG
@@ -34,6 +36,9 @@ server: $(SERVER_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 client: $(CLIENT_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+bench: $(BENCH_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 test_server: $(TEST_OBJS)
@@ -53,8 +58,8 @@ $(BUILD_DIR)/tests/%.o: tests/%.cpp
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DSERVER_PATH="\"$(abspath server)\"" -c -o $@ $<
 
 clean:
-	rm -rf $(BUILD_DIR) server client test_server
+	rm -rf $(BUILD_DIR) server client bench test_server
 
--include $(SERVER_OBJS:.o=.d) $(CLIENT_OBJS:.o=.d) $(TEST_OBJS:.o=.d)
+-include $(SERVER_OBJS:.o=.d) $(CLIENT_OBJS:.o=.d) $(BENCH_OBJS:.o=.d) $(TEST_OBJS:.o=.d)
 
 .PHONY: all release clean test
