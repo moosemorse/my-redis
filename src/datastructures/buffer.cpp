@@ -3,48 +3,71 @@
 #include <assert.h>
 #include <string.h>
 
-static size_t buffer_remaining_space(struct Buffer *buf);
+Buffer::Buffer() : Buffer(4096) {}
 
-// advance pointer
-void buf_consume(struct Buffer *buf, size_t n) {
-  assert(buf->data_begin + n <= buf->data_end);
-  buf->data_begin += n;
+Buffer::Buffer(size_t initial_capacity) {
+  size_t cap = initial_capacity ? initial_capacity : 64;
+  buffer_begin_ = new uint8_t[cap];
+  buffer_end_ = buffer_begin_ + cap;
+  data_begin_ = buffer_begin_;
+  data_end_ = buffer_begin_;
 }
 
-void buf_append(struct Buffer *buf, const uint8_t *data, size_t len) {
-  // check we have enough room, using fixed allocation buffer
-  assert(buffer_remaining_space(buf) >= len);
+Buffer::~Buffer() { delete[] buffer_begin_; }
 
-  // move data to front to make room
-  size_t space_occupied = buf->data_end - buf->data_begin;
-  memmove(buf->buffer_begin, buf->data_begin, space_occupied);
-  buf->data_begin = buf->buffer_begin;
-  buf->data_end = buf->data_begin + space_occupied;
-
-  // copy new data to the end of the buffer
-  memcpy(buf->data_end, data, len);
-  buf->data_end += len;
+void Buffer::consume(size_t n) {
+  assert(data_begin_ + n <= data_end_);
+  data_begin_ += n;
 }
 
-// assumption: buffer allocated with new[]
-void buf_append_realloc(struct Buffer *buf, const uint8_t *data, size_t len) {
-  // check we have enough room, if not allocate more space to buffer
-  if (buffer_remaining_space(buf) < len) {
-    size_t data_size = buf->data_end - buf->data_begin;
-    size_t new_size = data_size + len;
-    uint8_t *new_buffer = new uint8_t[new_size];
-    memcpy(new_buffer, buf->data_begin, data_size);
-    delete[] buf->buffer_begin;
-    buf->buffer_begin = new_buffer;
-    buf->buffer_end = new_buffer + new_size;
-    buf->data_begin = new_buffer;
-    buf->data_end = new_buffer + data_size;
+void Buffer::truncate(size_t new_size) {
+  assert(new_size <= occupied());
+  data_end_ = data_begin_ + new_size;
+}
+
+void Buffer::append(const uint8_t *data, size_t len) {
+  if (len == 0) {
+    return;
   }
-  memcpy(buf->data_end, data, len);
-  buf->data_end += len;
+
+  if (remaining_at_end() < len) {
+    // total free space (already-consumed prefix + free tail) is enough:
+    // shift the unconsumed bytes down to reclaim it, no allocation needed.
+    if (capacity() - occupied() >= len) {
+      compact();
+    } else {
+      grow(len);
+    }
+  }
+
+  memcpy(data_end_, data, len);
+  data_end_ += len;
 }
 
-static size_t buffer_remaining_space(struct Buffer *buf) {
-  return (buf->buffer_end - buf->buffer_begin) -
-         (buf->data_end - buf->data_begin);
+void Buffer::compact() {
+  if (data_begin_ == buffer_begin_) {
+    return;
+  }
+  size_t n = occupied();
+  memmove(buffer_begin_, data_begin_, n);
+  data_begin_ = buffer_begin_;
+  data_end_ = buffer_begin_ + n;
+}
+
+void Buffer::grow(size_t min_extra) {
+  size_t occ = occupied();
+  size_t needed = occ + min_extra;
+  size_t new_cap = capacity() ? capacity() : 64;
+  while (new_cap < needed) {
+    new_cap *= 2;
+  }
+
+  uint8_t *new_buffer = new uint8_t[new_cap];
+  memcpy(new_buffer, data_begin_, occ);
+  delete[] buffer_begin_;
+
+  buffer_begin_ = new_buffer;
+  buffer_end_ = new_buffer + new_cap;
+  data_begin_ = new_buffer;
+  data_end_ = new_buffer + occ;
 }
