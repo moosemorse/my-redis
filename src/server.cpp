@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <iostream>
 #include <netinet/in.h>
-#include <poll.h>
+#include <sys/epoll.h>
 #include <stdexcept>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +24,7 @@ struct Conn {
   bool want_close{false};
   Buffer incoming;
   Buffer outgoing;
+  uint32_t events{0};
 };
 
 static struct {
@@ -145,7 +146,28 @@ static void do_del(std::vector<std::string> &cmd, Buffer &out);
 
 const size_t k_max_args = 1024; // max number of arguments in a request
 
-// TODO: note for later to replace poll() with epoll()
+const int k_max_events = 1024;
+
+static void update_interest(int epfd, Conn *conn) {
+  uint32_t events = 0;
+  if (conn->want_read) {
+    events |= EPOLLIN;
+  }
+  if (conn->want_write) {
+    events |= EPOLLOUT;
+  }
+  if (events == conn->events) {
+    return;
+  }
+  struct epoll_event ev = {};
+  ev.events = events;
+  ev.data.fd = conn->fd;
+  if (epoll_ctl(epfd, EPOLL_CTL_MOD, conn->fd, &ev)) {
+    conn->want_close = true;
+    return;
+  }
+  conn->events = events;
+}
 
 int main() {
   /// (1) creating and configure socket
@@ -173,63 +195,71 @@ int main() {
 
   // (4) accept connections and process
 
+  int epfd = epoll_create1(0);
+  if (epfd < 0) {
+    throw std::runtime_error("epoll_create1() error");
+  }
+  struct epoll_event lev = {};
+  lev.events = EPOLLIN;
+  lev.data.fd = fd;
+  if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &lev)) {
+    throw std::runtime_error("epoll_ctl() error");
+  }
+
   std::vector<Conn *> fd2conn;
-  std::vector<struct pollfd> poll_args;
+  struct epoll_event events[k_max_events];
 
   while (true) {
-
-    // prepare the arguments for poll() -- mapping fd to Conn*
-    poll_args.clear();
-    struct pollfd pfd = {fd, POLLIN, 0};
-    poll_args.push_back(pfd);
-    for (Conn *conn : fd2conn) {
-      if (!conn) {
-        continue;
-      }
-      struct pollfd pfd = {conn->fd, POLLERR, 0};
-      if (conn->want_read) {
-        pfd.events |= POLLIN;
-      }
-      if (conn->want_write) {
-        pfd.events |= POLLOUT;
-      }
-      poll_args.push_back(pfd);
-    }
-
-    int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), -1);
-    if (rv < 0 && errno == EINTR) {
-      errno = 0; // not an error
+    int n = epoll_wait(epfd, events, k_max_events, -1);
+    if (n < 0 && errno == EINTR) {
+      errno = 0;
       continue;
     }
-    if (rv < 0)
-      throw std::runtime_error("poll() error");
+    if (n < 0) {
+      throw std::runtime_error("epoll_wait() error");
+    }
 
-    // 0 is listening socket, 1..N are client connections
-    if (poll_args[0].revents) {
-      if (Conn *conn = handle_accept(fd)) {
-        // put into the map, extend vector if idx out of bounds
+    for (int i = 0; i < n; ++i) {
+      int efd = events[i].data.fd;
+      uint32_t ready = events[i].events;
+
+      if (efd == fd) {
+        Conn *conn = handle_accept(fd);
+        if (!conn) {
+          continue;
+        }
+        struct epoll_event cev = {};
+        cev.events = EPOLLIN;
+        cev.data.fd = conn->fd;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, conn->fd, &cev)) {
+          msg("epoll_ctl() error");
+          (void)close(conn->fd);
+          delete conn;
+          continue;
+        }
+        conn->events = EPOLLIN;
         if (fd2conn.size() <= (size_t)conn->fd) {
           fd2conn.resize((size_t)conn->fd + 1);
         }
         fd2conn[conn->fd] = conn;
-      }
-    }
-
-    for (size_t i{1}; i < poll_args.size(); ++i) {
-      uint32_t ready = poll_args[i].revents;
-      Conn *conn = fd2conn[poll_args[i].fd];
-
-      // read and write
-
-      if (ready & POLLIN) {
-        handle_read(conn); // application logic
-      }
-      if (ready & POLLOUT) {
-        handle_write(conn); // application logic
+        continue;
       }
 
-      if ((ready & POLLERR) || conn->want_close) {
-        (void)close(conn->fd); // callback could be added here like handle_err
+      Conn *conn = fd2conn[efd];
+
+      if (ready & EPOLLIN) {
+        handle_read(conn);
+      }
+      if ((ready & EPOLLOUT) && conn->want_write) {
+        handle_write(conn);
+      }
+
+      if (!(ready & (EPOLLERR | EPOLLHUP)) && !conn->want_close) {
+        update_interest(epfd, conn);
+      }
+
+      if ((ready & (EPOLLERR | EPOLLHUP)) || conn->want_close) {
+        (void)close(conn->fd);
         fd2conn[conn->fd] = nullptr;
         delete conn;
       }
@@ -283,7 +313,7 @@ static void handle_read(Conn *conn) {
                                  // now need to write to connection
     conn->want_write = true;
     conn->want_read = false;
-    return handle_write(conn); // optimisation: avoid another loop of poll()
+    return handle_write(conn); // optimisation: avoid another loop of epoll_wait()
   }
 }
 

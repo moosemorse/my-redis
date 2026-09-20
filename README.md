@@ -1,6 +1,6 @@
 # my-redis
 
-A single-threaded, `poll()`-based TCP key-value server in C++17: a hand-written
+A single-threaded, `epoll`-based TCP key-value server in C++17: a hand-written
 TLV wire protocol, an RAII byte buffer for partial/pipelined reads, and a
 custom hash table with incremental (progressive) rehashing. Supports
 `GET`/`SET`/`DEL`.
