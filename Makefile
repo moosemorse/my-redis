@@ -1,5 +1,5 @@
 CXX       := g++
-CXXFLAGS  := -std=c++17 -Wall -Wextra -g
+CXXFLAGS  := -std=c++20 -Wall -Wextra -g
 
 SRC_DIR   := src
 BUILD_DIR := build
@@ -29,7 +29,7 @@ TEST_OBJS   := $(BUILD_DIR)/tests/test_server.o $(SHARED_SRCS:$(SRC_DIR)/%.cpp=$
 all: server client bench
 
 # optimised build for benchmarking, e.g. `make clean release`
-release: CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -DNDEBUG
+release: CXXFLAGS := -std=c++20 -Wall -Wextra -O2 -DNDEBUG
 release: all
 
 server: $(SERVER_OBJS)
